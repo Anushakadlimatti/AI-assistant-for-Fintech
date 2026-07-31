@@ -1,4 +1,5 @@
 import os
+import json
 import uuid
 import datetime
 from typing import Dict, Any, List, Tuple, Optional
@@ -146,22 +147,68 @@ Guidelines for Date Understanding:
   - "yesterday" -> 2026-07-21 to 2026-07-21
   - "this week" -> Monday 2026-07-20 to Sunday 2026-07-26 (or {CURRENT_DATE})
   - "last week" -> Monday 2026-07-13 to Sunday 2026-07-19
-  - "this month" -> 2026-07-01 to 2026-07-31
+  - "this month" -> 2026-07-01 to {CURRENT_DATE}
   - "last month" -> 2026-06-01 to 2026-06-30
   - "this year" -> 2026-01-01 to 2026-12-31
   - "previous year" -> 2025-01-01 to 2025-12-31
   - "last 30 days" -> 2026-06-22 to {CURRENT_DATE}
   - "last 7 days" -> 2026-07-15 to {CURRENT_DATE}
 
-Guidelines for Tool Execution:
-- Do NOT make assumptions about data. Always call the relevant database tools.
-- Never mention or generate raw SQL queries. Always talk about the structured database tools that you run behind the scenes.
-- If the user asks to generate a report, download a report, or export to PDF, you must call the relevant analytics tools (like get_fd_summary, get_rd_summary, or get_branch_summary) to compile the data first. Then state in your answer that the PDF report has been generated and is ready to download using the button below.
+CRITICAL Tool Rules:
+- For ANY question about counts, amounts, averages, branches, trends, comparisons, or reports, you MUST call the appropriate tool(s) via the function-calling API.
+- NEVER describe a tool call in plain text. NEVER say you will "run", "try", or "call" a tool.
+- NEVER invent placeholder values (e.g. "X deposits") or apologize that data is unavailable.
+- NEVER mention tool names like get_rd_summary in your user-facing answer.
+- If the user asks for a PDF/report/export, call the needed analytics tools first, then say the PDF is ready to download.
 
 Response Style:
-- Keep your answers highly professional, quantitative, and clear.
-- Present summary figures explicitly in your text response.
+- After tools return results, answer with concrete numbers from those results only.
+- Keep answers professional, quantitative, and clear.
 """
+
+_ANALYTICS_KEYWORDS = (
+    "fd", "rd", "deposit", "how many", "total", "branch", "today", "yesterday",
+    "month", "week", "year", "report", "pdf", "average", "compare", "trend",
+    "top", "volume", "booking", "created", "summary",
+)
+
+_TOOL_NARRATION_MARKERS = (
+    "get_rd_summary", "get_fd_summary", "get_branch_summary", "get_top_fd",
+    "get_monthly_trend", "get_daily_summary",
+    "i will run", "let me try", "without the actual data",
+    "assuming the tool", "tool with the date", "unfortunately, without",
+)
+
+def _is_analytics_question(message: str) -> bool:
+    msg = message.lower()
+    return any(k in msg for k in _ANALYTICS_KEYWORDS)
+
+def _looks_like_tool_narration(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(marker in lower for marker in _TOOL_NARRATION_MARKERS)
+
+def _assistant_message_to_dict(message: Any) -> Dict[str, Any]:
+    """Normalize OpenAI/Groq assistant message objects for chat history."""
+    payload: Dict[str, Any] = {
+        "role": "assistant",
+        "content": message.content or "",
+    }
+    if getattr(message, "tool_calls", None):
+        payload["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
+                },
+            }
+            for tc in message.tool_calls
+        ]
+    return payload
+
 
 def execute_tool_call(name: str, arguments: Dict[str, Any]) -> Any:
     """Invokes database tools dynamically based on name and arguments."""
@@ -422,13 +469,14 @@ def process_chat_message(message: str, session_id: Optional[str] = None) -> Dict
     # Append user message
     history.append({"role": "user", "content": message})
     
-    # Call Groq API
+    # Call Groq API — force tools when the question clearly needs DB data
+    tool_choice: Any = "required" if _is_analytics_question(message) else "auto"
     try:
         response = client.chat.completions.create(
             model=DEFAULT_MODEL,
             messages=history,
             tools=LLM_TOOLS,
-            tool_choice="auto"
+            tool_choice=tool_choice,
         )
     except Exception as e:
         # Clean history in case it got corrupted
@@ -437,54 +485,67 @@ def process_chat_message(message: str, session_id: Optional[str] = None) -> Dict
         raise e
 
     response_message = response.choices[0].message
+
+    # Some models narrate tool use instead of emitting tool_calls — retry forced
+    if (
+        not response_message.tool_calls
+        and (
+            _is_analytics_question(message)
+            or _looks_like_tool_narration(response_message.content)
+        )
+    ):
+        try:
+            response = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=history,
+                tools=LLM_TOOLS,
+                tool_choice="required",
+            )
+            response_message = response.choices[0].message
+        except Exception as e:
+            if len(history) > 1:
+                history.pop()
+            raise e
+
     executed_tools = []
-    
+
     # Check for tool calls
     if response_message.tool_calls:
-        # We need to execute tool calls
-        # Append the assistant's tool-call request to the history
-        history.append(response_message)
-        
+        history.append(_assistant_message_to_dict(response_message))
+
         for tool_call in response_message.tool_calls:
             function_name = tool_call.function.name
-            import json
             function_args = json.loads(tool_call.function.arguments)
-            
+
             try:
-                # Execute tool in Python
                 tool_result = execute_tool_call(function_name, function_args)
                 executed_tools.append((function_name, function_args, tool_result))
-                
-                # Append tool result to history
                 history.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "name": function_name,
-                    "content": json.dumps(tool_result)
+                    "content": json.dumps(tool_result),
                 })
             except Exception as e:
-                # Append error message back to the LLM
                 history.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "name": function_name,
-                    "content": json.dumps({"error": str(e)})
+                    "content": json.dumps({"error": str(e)}),
                 })
-        
-        # Get a final response from the assistant now that it has tool outputs
+
+        # Final answer grounded in tool outputs
         try:
             second_response = client.chat.completions.create(
                 model=DEFAULT_MODEL,
-                messages=history
+                messages=history,
             )
             final_message = second_response.choices[0].message
-            history.append({"role": "assistant", "content": final_message.content})
-            answer_text = final_message.content
+            answer_text = final_message.content or ""
+            history.append({"role": "assistant", "content": answer_text})
         except Exception as e:
-            # Clean up history in case of failure
             raise e
     else:
-        # No tool call, append response content directly
         history.append({"role": "assistant", "content": response_message.content or ""})
         answer_text = response_message.content or ""
 
