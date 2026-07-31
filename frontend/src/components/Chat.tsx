@@ -5,7 +5,6 @@ import {
   Button, 
   List, 
   ListItemButton, 
-  ListItemIcon, 
   ListItemText, 
   Divider, 
   Paper, 
@@ -14,12 +13,10 @@ import {
   IconButton,
 } from '@mui/material';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
-import HelpIcon from '@mui/icons-material/Help';
 import PsychologyIcon from '@mui/icons-material/Psychology';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { sendChatMessage } from '../services/api';
-import { AddLink } from '@mui/icons-material';
 
 interface Message {
   id: string;
