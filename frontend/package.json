@@ -26,7 +26,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "lightningcss": "^1.33.0",
-    "lightningcss-win32-x64-msvc": "^1.33.0",
     "oxlint": "^1.71.0",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
