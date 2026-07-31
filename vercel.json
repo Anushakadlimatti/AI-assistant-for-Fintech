@@ -1,24 +1,23 @@
 {
-    "version": 2,
-    "services": {
-      "frontend": {
-        "root": "frontend/",
-        "framework": "vite"
-      },
-      "backend": {
-        "root": "backend/",
-        "entrypoint": "main.py"
-      }
+  "services": {
+    "frontend": {
+      "root": "frontend/",
+      "framework": "vite"
     },
-    "rewrites": [
-      {
-        "source": "/api/(.*)",
-        "destination": { "service": "backend" }
-      },
-      {
-        "source": "/(.*)",
-        "destination": { "service": "frontend" }
-      }
-    ]
-  }
-  
+    "backend": {
+      "root": "backend/",
+      "entrypoint": "app:app",
+      "framework": "fastapi"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": { "service": "backend" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "frontend" }
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 import axios from 'axios';
 
-// Default FastAPI backend URL
-const API_BASE_URL = 'http://localhost:8008';
+// Local FastAPI; on Vercel, /api is rewritten to the backend service
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ??
+  (import.meta.env.DEV ? 'http://localhost:8008' : '/api');
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
