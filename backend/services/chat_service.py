@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import uuid
 import datetime
 from typing import Dict, Any, List, Tuple, Optional
@@ -208,6 +209,16 @@ def _assistant_message_to_dict(message: Any) -> Dict[str, Any]:
             for tc in message.tool_calls
         ]
     return payload
+
+
+def _sanitize_answer(text: str) -> str:
+    """Remove leaked Llama/Groq tool-call markup from user-facing answers."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<function=.*?</function>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<function=[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"</?function>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
 
 
 def execute_tool_call(name: str, arguments: Dict[str, Any]) -> Any:
@@ -508,6 +519,7 @@ def process_chat_message(message: str, session_id: Optional[str] = None) -> Dict
             raise e
 
     executed_tools = []
+    tool_errors: List[str] = []
 
     # Check for tool calls
     if response_message.tool_calls:
@@ -527,27 +539,44 @@ def process_chat_message(message: str, session_id: Optional[str] = None) -> Dict
                     "content": json.dumps(tool_result),
                 })
             except Exception as e:
+                err = str(e)
+                tool_errors.append(err)
                 history.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "name": function_name,
-                    "content": json.dumps({"error": str(e)}),
+                    "content": json.dumps({"error": err}),
                 })
 
-        # Final answer grounded in tool outputs
-        try:
-            second_response = client.chat.completions.create(
-                model=DEFAULT_MODEL,
-                messages=history,
+        # If every tool failed, surface the real DB/runtime error (don't let the LLM invent text)
+        if tool_errors and not executed_tools:
+            answer_text = (
+                "I couldn't retrieve data from the database. "
+                f"Error: {tool_errors[0]}"
             )
-            final_message = second_response.choices[0].message
-            answer_text = final_message.content or ""
             history.append({"role": "assistant", "content": answer_text})
-        except Exception as e:
-            raise e
+        else:
+            # Final answer grounded in tool outputs — forbid further tool calls
+            try:
+                second_response = client.chat.completions.create(
+                    model=DEFAULT_MODEL,
+                    messages=history + [{
+                        "role": "system",
+                        "content": (
+                            "Using only the tool results above, answer the user with concrete numbers. "
+                            "Do not call tools again. Do not output function call markup."
+                        ),
+                    }],
+                    tool_choice="none",
+                )
+                final_message = second_response.choices[0].message
+                answer_text = _sanitize_answer(final_message.content or "")
+                history.append({"role": "assistant", "content": answer_text})
+            except Exception as e:
+                raise e
     else:
         history.append({"role": "assistant", "content": response_message.content or ""})
-        answer_text = response_message.content or ""
+        answer_text = _sanitize_answer(response_message.content or "")
 
     # Parse executed tools to build structural frontend representation (tables, charts)
     table_data, chart_data = build_frontend_tables_and_charts(executed_tools)

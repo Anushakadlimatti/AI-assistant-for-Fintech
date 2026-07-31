@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from schemas import ChatRequest, ChatResponse
 from services.chat_service import process_chat_message, PDF_OUTPUT_PATH
+from database import check_database
 
 app = FastAPI(
     title="AI Banking Assistant API",
@@ -35,6 +36,20 @@ router = APIRouter()
 @router.get("/")
 def read_root():
     return {"message": "AI Banking Assistant API is running."}
+
+@router.get("/health")
+def health_check():
+    """Verify API + database connectivity (useful for Vercel debugging)."""
+    db_status = check_database()
+    status_code = 200 if db_status.get("ok") else 503
+    payload = {
+        "api": "ok",
+        "database": db_status,
+        "groq_key_configured": bool(os.getenv("GROQ_API_KEY")),
+    }
+    if status_code != 200:
+        raise HTTPException(status_code=status_code, detail=payload)
+    return payload
 
 @router.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest):
