@@ -1,0 +1,9 @@
+fastapi>=0.111.0
+uvicorn>=0.30.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+openai>=1.0.0  # Groq uses the OpenAI-compatible Python SDK
+python-dotenv>=1.0.0
+reportlab>=4.2.0
+pydantic>=2.10.0
+pydantic-settings>=2.0.0
